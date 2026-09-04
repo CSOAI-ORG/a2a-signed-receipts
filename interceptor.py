@@ -72,6 +72,8 @@ def verify_receipt(
     """
     try:
         env = receipt["signature"]
+        if not isinstance(env, dict):
+            return False, "UNCHECKABLE — no signature envelope; nothing to check"
         body = {k: v for k, v in receipt.items() if k != "signature"}
         unsigned = {k: v for k, v in body.items() if k != "content_id"}
         if body.get("content_id") != _sha256(_canon(unsigned)):
@@ -81,7 +83,16 @@ def verify_receipt(
             bytes.fromhex(env["sig"]), _canon(body)
         )
         if resolve_did is None:
-            return True, f"VALID (integrity) — kid {env.get('kid')} not resolved"
+            # The signature above was checked against signer_public_key — the key THIS RECEIPT
+            # carries. That proves the bytes are internally consistent and nothing about who
+            # signed them: anyone can mint a receipt with a key they generated. Returning True
+            # here let a self-signed receipt pass as VALID, which is the whole property the
+            # did:web trust root exists to provide. Integrity without identity is UNCHECKABLE.
+            return False, (
+                f"UNCHECKABLE — integrity holds against the embedded key, but kid "
+                f"{env.get('kid')!r} was not resolved. Pass resolve_did= to establish identity; "
+                "a self-embedded key never establishes it."
+            )
         did = env.get("kid", "").split("#")[0]
         doc = resolve_did(did)
         published = {
@@ -91,8 +102,14 @@ def verify_receipt(
         if any(pub_hex in p for p in published if p):
             return True, f"VALID — key matches published DID doc for {did}"
         return False, f"signature valid but key NOT in DID doc for {did}"
+    except InvalidSignature:
+        # A finding about the bytes: the signature does not verify over them.
+        return False, "INVALID — signature does not verify over these bytes"
     except Exception as e:  # noqa: BLE001
-        return False, f"INVALID — {type(e).__name__}: {e}"
+        # Anything else — a malformed field, an unreachable DID document, a bad hex string — is a
+        # failure to complete the check, not evidence that the receipt is forged. Reporting a DNS
+        # timeout as a forgery is the error this extension exists to help others avoid.
+        return False, f"UNCHECKABLE — {type(e).__name__}: {e}"
 
 
 if __name__ == "__main__":
