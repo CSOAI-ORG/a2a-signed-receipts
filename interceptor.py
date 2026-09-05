@@ -61,6 +61,13 @@ def issue_receipt(
     return {**payload, "signature": {"alg": "Ed25519", "kid": kid, "signer_public_key": pub, "sig": sig.hex()}}
 
 
+# Algorithms THIS verifier implements. Not the set the format permits — a2a.signed-receipt/0.1
+# carries `alg` precisely so other algorithms can be added without forking the schema, and
+# a2aproject/A2A#2150 proposes ML-DSA-65 (FIPS 204) over this exact wire shape. Anything not
+# listed here verifies as UNCHECKABLE with the algorithm named, never as INVALID.
+SUPPORTED_ALGS = frozenset({"Ed25519"})
+
+
 def verify_receipt(
     receipt: dict,
     resolve_did: Callable[[str], dict] | None = None,
@@ -78,6 +85,25 @@ def verify_receipt(
         unsigned = {k: v for k, v in body.items() if k != "content_id"}
         if body.get("content_id") != _sha256(_canon(unsigned)):
             return False, "content_id mismatch"
+        # THE DECLARED ALGORITHM IS READ BEFORE ANY KEY IS TOUCHED.
+        #
+        # This block used to go straight to Ed25519 without ever reading signature.alg. The
+        # field was therefore decorative: a receipt declaring "ML-DSA-65" was silently checked
+        # as Ed25519 and reported as a bad signature, which is an untrue statement about
+        # someone else's valid receipt. It also made algorithm agility impossible without
+        # forking the schema, which is what a2aproject/A2A#2150 asked for.
+        #
+        # An algorithm we do not implement is UNCHECKABLE, named, and never INVALID. We do not
+        # own the set of algorithms; we own only what this verifier can actually check.
+        alg = env.get("alg")
+        if alg is None:
+            return False, "UNCHECKABLE — signature declares no alg; refusing to guess one"
+        if alg not in SUPPORTED_ALGS:
+            return False, (
+                f"UNCHECKABLE — signature.alg {alg!r} is not implemented by this verifier "
+                f"(implemented: {', '.join(sorted(SUPPORTED_ALGS))}). The receipt may be "
+                "perfectly valid; this verifier cannot say either way."
+            )
         pub_hex = env["signer_public_key"]
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(pub_hex)).verify(
             bytes.fromhex(env["sig"]), _canon(body)
@@ -93,7 +119,16 @@ def verify_receipt(
                 f"{env.get('kid')!r} was not resolved. Pass resolve_did= to establish identity; "
                 "a self-embedded key never establishes it."
             )
+        # METHOD-AGNOSTIC. The kid is a DID URL; which DID method it names is the issuer's
+        # profile choice, not this format's. a2aproject/A2A#2150 raised this from production
+        # experience running did:wba. We resolve kid -> DID document -> key and never require
+        # the string to start with did:web:.
         did = env.get("kid", "").split("#")[0]
+        if not did.startswith("did:"):
+            return False, (
+                f"UNCHECKABLE — kid {env.get('kid')!r} is not a DID URL, so there is no "
+                "document to resolve"
+            )
         doc = resolve_did(did)
         published = {
             vm.get("publicKeyHex") or vm.get("publicKeyMultibase") or json.dumps(vm.get("publicKeyJwk", {}))
