@@ -41,11 +41,13 @@ def _doc_for(receipt):
 
 def test_a_declared_algorithm_we_do_not_implement_is_uncheckable_not_invalid():
     r, _ = _receipt()
-    r["signature"]["alg"] = "ML-DSA-65"
+    # Falcon-512 (NIST round-4 alternate), not ML-DSA-65: this repo now implements ML-DSA-65 (see
+    # test_ml_dsa_65.py), so it can no longer stand in as "an algorithm we don't implement".
+    r["signature"]["alg"] = "Falcon-512"
     ok, reason = verify_receipt(r, resolve_did=lambda d: _doc_for(r))
     assert ok is False
     assert "UNCHECKABLE" in reason
-    assert "ML-DSA-65" in reason, "the algorithm must be named so the caller knows what is missing"
+    assert "Falcon-512" in reason, "the algorithm must be named so the caller knows what is missing"
     assert "INVALID" not in reason
 
 
@@ -96,4 +98,26 @@ def test_a_kid_that_is_not_a_did_url_is_uncheckable():
 
 def test_the_supported_set_is_this_verifier_not_the_format():
     assert "Ed25519" in SUPPORTED_ALGS
-    assert "ML-DSA-65" not in SUPPORTED_ALGS  # honest: we do not implement it yet
+    assert "ML-DSA-65" in SUPPORTED_ALGS  # additive, see test_ml_dsa_65.py — needs pqcrypto to run
+    assert "Falcon-512" not in SUPPORTED_ALGS  # honest: still not implemented
+
+
+def test_a_forged_ed25519_signature_is_invalid_not_a_crash():
+    # None of the tests above sign the body with one key and re-embed a DIFFERENT key's signature
+    # — the one shape that makes `cryptography`'s Ed25519 verify() actually raise InvalidSignature
+    # instead of short-circuiting earlier (content_id mismatch, alg mismatch, bad hex). That
+    # exception class was referenced in verify_receipt()'s except clause but never imported, so
+    # this exact case raised NameError: name 'InvalidSignature' is not defined instead of
+    # returning (False, "INVALID ...") — a forged receipt crashed the verifier rather than being
+    # rejected. Confirmed against this file before the fix; this pins it down permanently.
+    genuine, _key = _receipt()
+    attacker_key = Ed25519PrivateKey.generate()
+    forged = copy.deepcopy(genuine)
+    body = {k: v for k, v in genuine.items() if k != "signature"}
+    from interceptor import _canon
+
+    forged["signature"]["sig"] = attacker_key.sign(_canon(body)).hex()
+    ok, reason = verify_receipt(forged, resolve_did=lambda d: _doc_for(genuine))
+    assert ok is False
+    assert "INVALID" in reason
+    assert "does not verify" in reason
