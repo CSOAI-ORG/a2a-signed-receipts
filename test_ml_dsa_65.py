@@ -82,11 +82,54 @@ def test_forged_ml_dsa_65_receipt_verifies_its_own_bytes_but_is_rejected_on_key_
     assert "NOT in DID doc" in reason
 
 
-def test_ml_dsa_65_content_id_and_signing_procedure_match_ed25519s():
-    # Same _build_payload, same _canon — only the signature envelope's alg/encoding differ.
-    from interceptor import _build_payload, _canon, _sha256  # noqa: F401 (internal, for parity check)
+def test_a_forged_ml_dsa_65_signature_is_invalid_not_a_false_accept():
+    # The one case none of the tests above actually exercise: a mismatched (key, signature) pair
+    # under an otherwise well-formed ML-DSA-65 envelope. Unlike the "forged" test above, the
+    # embedded signer_public_key here is the GENUINE key — only `sig` is replaced with a different
+    # keypair's signature over the same bytes. If `_verify_ml_dsa_65` were disabled or replaced
+    # with a stub that always returns True, this is the test that would catch it: every other
+    # ML-DSA-65 test here either short-circuits on content_id (tampered) or is satisfied by the
+    # DID-trust check alone (forged, whose own signature genuinely verifies against its own key).
+    genuine, pub, _sec = _receipt()
+    attacker_pub, attacker_sec = pqcrypto_ml_dsa_65.generate_keypair()
+    body = {k: v for k, v in genuine.items() if k != "signature"}
+    from interceptor import _canon
 
-    r, _pub, _sec = _receipt()
-    body = {k: v for k, v in r.items() if k != "signature"}
-    unsigned = {k: v for k, v in body.items() if k != "content_id"}
-    assert body["content_id"] == _sha256(_canon(unsigned))
+    forged_sig = pqcrypto_ml_dsa_65.sign(attacker_sec, _canon(body))
+    tampered = copy.deepcopy(genuine)
+    tampered["signature"]["sig"] = __import__("base64").b64encode(forged_sig).decode("ascii")
+    assert tampered["signature"]["signer_public_key"] == genuine["signature"]["signer_public_key"]
+    ok, reason = verify_receipt(tampered, resolve_did=lambda d: _doc_for(genuine))
+    assert ok is False
+    assert "INVALID" in reason
+    assert "does not verify" in reason
+
+
+def test_ml_dsa_65_uses_the_same_canonicalisation_as_ed25519():
+    # Build an Ed25519 receipt and an ML-DSA-65 receipt from IDENTICAL fields and confirm the
+    # body-minus-signature bytes actually signed are byte-for-byte the same regardless of alg —
+    # i.e. this is genuinely the same wire shape and signing procedure, not a lookalike schema
+    # that happens to share field names. A real regression here (e.g. ML-DSA-65 quietly using a
+    # different canonicalisation) would NOT be caught by any test above, since none of them compare
+    # across algorithms.
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from interceptor import issue_receipt
+
+    fixed_fields = dict(
+        issuer_did="did:web:example.org",
+        task_id="t1",
+        subject_card="https://example.org/.well-known/agent-card.json",
+        claims=[{"type": "measurement", "detail": "d", "evidence_sha256": "0" * 64}],
+    )
+    ed = issue_receipt(Ed25519PrivateKey.generate(), "did:web:example.org#k1", **fixed_fields)
+    pub, sec = pqcrypto_ml_dsa_65.generate_keypair()
+    ml = issue_receipt_ml_dsa_65(sec, pub, "did:web:example.org#k1", **fixed_fields)
+
+    # issued_at is a real-time timestamp (time.strftime, second granularity) — not asserted equal
+    # or unequal, since two receipts issued in the same wall-clock second legitimately share it.
+    # Every OTHER field, including content_id (itself derived from the canonical body), must match
+    # exactly: that's the actual proof the two algorithms canonicalise and sign identically.
+    ed_body = {k: v for k, v in ed.items() if k not in ("signature", "issued_at")}
+    ml_body = {k: v for k, v in ml.items() if k not in ("signature", "issued_at")}
+    assert ed_body == ml_body

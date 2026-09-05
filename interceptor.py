@@ -132,7 +132,7 @@ _ALGS: dict[str, tuple[Callable[[str], bytes], Callable[[bytes, bytes, bytes], b
     "Ed25519": (bytes.fromhex, _verify_ed25519),
     # NIST FIPS 204. Additive per a2aproject/A2A#2150 — same wire shape, same signing procedure,
     # base64 encoding. Optional dependency: only touched when a receipt actually declares this alg.
-    "ML-DSA-65": (base64.b64decode, _verify_ml_dsa_65),
+    "ML-DSA-65": (lambda s: base64.b64decode(s, validate=True), _verify_ml_dsa_65),
 }
 
 # Algorithms THIS verifier implements. Not the set the format permits — a2a.signed-receipt/0.1
