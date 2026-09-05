@@ -15,8 +15,12 @@ the interaction's outcome.
 
 ## 2. What this extension adds
 
-1. **A key-trust convention for §8.4:** the JWS `kid` is a DID URL under `did:web:`
-   (e.g. `did:web:csoai.org#site-release-1`). Verifiers resolve the DID document at
+1. **A key-trust convention for §8.4:** the JWS `kid` is a **DID URL**; the DID *method* is
+   the issuer's profile choice, not this convention's. `did:web` is the reference profile
+   (e.g. `did:web:csoai.org#site-release-1`) because it resolves over plain HTTPS with no new
+   registry, but a verifier MUST NOT require it — resolve `kid` → DID document → key and let
+   the method vary. Production deployments already run `did:wba`, and `did:webvh` is coming.
+   Verifiers resolve the DID document at
    `https://<host>/.well-known/did.json` and match the verification method. No new
    registry, no new PKI — HTTPS + a JSON file the host already controls.
 2. **A signed receipt object** an agent MAY attach to any Task completion
@@ -36,7 +40,18 @@ the interaction's outcome.
 ```
 
    Canonicalisation: RFC 8785 (same as §8.4). Verification is offline: recompute
-   `content_id`, resolve `kid` → DID doc → public key, check Ed25519.
+   `content_id`, **read `signature.alg`**, resolve `kid` → DID doc → public key, then check the
+   signature *with the algorithm the receipt declares*.
+
+   **`alg` is normative, not decorative.** A verifier MUST read it before selecting a
+   verification routine, and MUST report an algorithm it does not implement as **UNCHECKABLE**,
+   naming the algorithm — never as INVALID. A receipt in an algorithm you cannot check may be
+   perfectly valid; saying otherwise is an untrue statement about someone else's evidence.
+   `Ed25519` is the reference algorithm. Additional values are additive and require no schema
+   change: [a2aproject/A2A#2150](https://github.com/a2aproject/A2A/issues/2150) proposes
+   `ML-DSA-65` (NIST FIPS 204) over this exact wire shape, with `sig`/`signer_public_key` in
+   base64 rather than hex — at 3309- and 1952-byte values hex's 100% overhead stops being free.
+   Encoding is a per-algorithm profile choice; hex remains correct for Ed25519.
 
 3. **Register (normative):** a receipt is evidence of *what was claimed and when* by
    the issuer — it is **not** a certification, endorsement, or conformity mark, and
