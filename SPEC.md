@@ -69,9 +69,10 @@ the interaction's outcome.
 
 ## 4. Reference implementation
 
-`interceptor.py` — an ADK-style client/server interceptor (~100 lines) that attaches a
+`interceptor.py` — an ADK-style client/server interceptor (~230 lines) that attaches a
 signed receipt to task completion and verifies inbound ones. Framework-agnostic core;
-only `cryptography` required.
+`cryptography` required, `pqcrypto` optional (only imported when a receipt actually
+declares `signature.alg: "ML-DSA-65"`).
 
 ## 5. Security considerations
 
